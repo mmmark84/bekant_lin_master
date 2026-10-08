@@ -1,0 +1,107 @@
+# NodeMCU ESP32 + MikroE MCP2003B Click (modified, see docs/hardware.md) as LIN master
+# for an IKEA Bekant sit/stand desk.
+#
+#   esphome run bekant-desk.yaml
+
+esphome:
+  name: bekant-desk
+  friendly_name: Bekant desk
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [bekant]
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap: {}
+
+captive_portal:
+
+bekant:
+  id: desk
+  tx_pin: GPIO17  # -> Click RX (MCP2003B TXD)
+  rx_pin: GPIO16  # <- Click TX (MCP2003B RXD)
+  # cs_pin: GPIO4  # only with the CS SEL jumper on "CS"
+  # Optional: keep the desk away from the end stops (raw encoder counts, 299 - 6640).
+  # min_height_raw: 299
+  # max_height_raw: 6640
+  # Measure two heights with a tape and note the "Height (raw)" value for each.
+  calibration:
+    raw_low: 299
+    cm_low: 58.4
+    raw_high: 6640
+    cm_high: 119.4
+
+cover:
+  - platform: bekant
+    name: Desk
+
+sensor:
+  - platform: bekant
+    height:
+      name: Height
+    raw_height:
+      name: Height (raw)
+    drift:
+      name: Leg drift
+
+number:
+  - platform: bekant
+    target_height:
+      name: Target height
+      min_value: 60
+      max_value: 120
+
+button:
+  - platform: bekant
+    recalibrate:
+      name: Recalibrate
+  - platform: template
+    name: Sit
+    icon: mdi:chair-rolling
+    on_press:
+      - lambda: id(desk).move_to_cm(72.0);
+  - platform: template
+    name: Stand
+    icon: mdi:human-handsup
+    on_press:
+      - lambda: id(desk).move_to_cm(110.0);
+
+text_sensor:
+  - platform: bekant
+    status:
+      name: Status
+
+# Optional: physical up/down buttons (the original ones from the switch box, to GND).
+# A press while the desk drives to a target stops it, holding moves it - like the original.
+# binary_sensor:
+#   - platform: gpio
+#     pin: { number: GPIO25, mode: INPUT_PULLUP, inverted: true }
+#     name: Button up
+#     internal: true
+#     on_press: { lambda: "id(desk).set_button(1);" }
+#     on_release: { lambda: "id(desk).set_button(0);" }
+#   - platform: gpio
+#     pin: { number: GPIO26, mode: INPUT_PULLUP, inverted: true }
+#     name: Button down
+#     internal: true
+#     on_press: { lambda: "id(desk).set_button(-1);" }
+#     on_release: { lambda: "id(desk).set_button(0);" }
