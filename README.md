@@ -4,7 +4,8 @@ ESPHome external component that turns an ESP32 plus a LIN transceiver into the L
 IKEA Bekant sit/stand desk, replacing the original up/down switch box and exposing the desk to
 Home Assistant.
 
-> Status: written, not yet tested on the desk. Keep a hand near the power plug on the first runs.
+> Status: running on the desk (Click VBB on 12 V). Keep a hand near the power plug on the first
+> runs.
 
 ## How it works
 
@@ -18,14 +19,18 @@ component does the same from an ESP32:
   runs in its own FreeRTOS task; the ESPHome main loop only exchanges atomics with it.
 - Entity platforms: `cover`, `sensor`, `number`, `button`, `text_sensor`.
 
-Protocol details: [docs/protocol.md](docs/protocol.md). Hardware, Click modifications and wiring:
+Protocol details: [docs/protocol.md](docs/protocol.md). Hardware, 12 V supply and wiring:
 [docs/hardware.md](docs/hardware.md).
 
 ## Hardware
 
-NodeMCU ESP32 + MikroE MCP2003B Click on the cable of the original switch box (red VBAT, white
-GND, blue LIN). The Click needs two modifications for the desk's 29 V supply: remove U1 and
-D3/D4, and wire the old U1 output pad to 3.3 V. See [docs/hardware.md](docs/hardware.md).
+ESP32-S3-DevKitC-1 (or any ESP32) + MikroE MCP2003B Click on the cable of the original switch box
+(red VBAT 29 V, white GND, blue LIN).
+
+> **The LIN bus runs at 12 V, not at the desk's 29 V.** Feed the Click's VBB with 12 V from a
+> DC-DC buck converter (e.g. RECOM R-78HB12-0.5). Never connect the red 29 V wire directly to VBB.
+
+The Click itself needs no modifications. See [docs/hardware.md](docs/hardware.md).
 
 ## Build
 
@@ -44,8 +49,8 @@ esphome run bekant-desk.yaml
 | sensor | `raw_height` | Encoder value of leg A (diagnostic) |
 | sensor | `drift` | Encoder difference between the legs (diagnostic) |
 | number | `target_height` | Height slider in cm; follows the desk when it stops |
-| button | `recalibrate` | Drives slowly to the bottom end stop and re-zeroes the legs |
-| text_sensor | `status` | starting / initialising legs / idle / moving up / moving down / recalibrating / faults |
+| button | `recalibrate` | Motor recalibration: drives slowly to the bottom end stop and re-zeroes the legs (see below) |
+| text_sensor | `status` | starting / initialising legs / idle / moving up / moving down / recalibrating / faults (incl. "recalibration aborted") |
 
 From lambdas (`id(desk)`):
 

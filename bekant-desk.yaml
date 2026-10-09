@@ -1,4 +1,4 @@
-# NodeMCU ESP32 + MikroE MCP2003B Click (modified, see docs/hardware.md) as LIN master
+# ESP32-S3-DevKitC-1 + MikroE MCP2003B Click (VBB on 12 V, see docs/hardware.md) as LIN master
 # for an IKEA Bekant sit/stand desk.
 #
 #   esphome run bekant-desk.yaml
@@ -8,7 +8,7 @@ esphome:
   friendly_name: Bekant desk
 
 esp32:
-  board: esp32dev
+  board: esp32-s3-devkitc-1
   framework:
     type: esp-idf
 
@@ -18,7 +18,7 @@ external_components:
       path: components
     components: [bekant]
 
-logger:
+logger:  # ESP32-S3: logs on the "USB" port (USB Serial/JTAG)
 
 api:
   encryption:
@@ -38,8 +38,9 @@ captive_portal:
 bekant:
   id: desk
   tx_pin: GPIO17  # -> Click RX (MCP2003B TXD)
-  rx_pin: GPIO16  # <- Click TX (MCP2003B RXD)
-  # cs_pin: GPIO4  # only with the CS SEL jumper on "CS"
+  rx_pin: GPIO18  # <- Click TX (MCP2003B RXD)
+  # cs_pin: GPIO16  # only with the CS SEL jumper on "CS"
+  # NodeMCU ESP32 (board: esp32dev): tx_pin GPIO17, rx_pin GPIO16
   # Optional: keep the desk away from the end stops (raw encoder counts, 299 - 6640).
   # min_height_raw: 299
   # max_height_raw: 6640
