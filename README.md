@@ -64,7 +64,7 @@ id(desk).set_button(1);   // +1 up held, -1 down held, 0 released
 id(desk).get_height_cm(); id(desk).is_moving(); id(desk).is_online();
 ```
 
-## Calibration
+## Height calibration (cm)
 
 The legs report encoder counts. To get centimetres:
 
@@ -74,6 +74,29 @@ The legs report encoder counts. To get centimetres:
 
 `min_height_raw` / `max_height_raw` keep the desk away from obstacles (range 299-6640).
 
+This is only arithmetic in the ESP32; the desk doesn't move for it.
+
+## Motor recalibration
+
+Not the same as the height calibration above. The `recalibrate` button runs the legs' factory
+reset: both legs drive slowly to the bottom end stop, past the lowest normal position, and re-zero
+their encoders. It is only needed when the status reads "legs out of sync - recalibrate". In
+normal use you never press it.
+
+- While it runs, all other input is ignored, as on the original controller. It ends when both legs
+  report the bottom (status 1, encoder <= 99), then the status returns to "idle". The log shows
+  what the legs report, every second and on every status change.
+- It can hang: if the legs never report the bottom, it would wait forever. Megadesk, where this
+  routine comes from, says an interrupted recalibration needs a power cycle. Here, stop (cover
+  stop or a physical button) or a 2-minute timeout aborts it, and the status reads "recalibration
+  aborted". If the desk doesn't respond after that, power-cycle it.
+- The reliable route is the original switch box: hold up and down for 8 s, release up while
+  keeping down pressed, wait until the desk stops on its own, release. Check that the desk works,
+  then put the ESP32 back.
+
+A stray press drives the desk to the floor. Consider `disabled_by_default: true` on the button,
+or leave it out of the YAML.
+
 ## Safety
 
 - With the switch box gone there is no physical stop button unless you wire one (see the
@@ -82,7 +105,8 @@ The legs report encoder counts. To get centimetres:
   drops to idle and re-runs the start-up handshake.
 - When the legs drift more than `max_drift` counts apart (default 200) the desk refuses to move
   until it has been recalibrated.
-- Recalibration drives the desk to its lowest position. Clear the space under the desk first.
+- Recalibration drives the desk to its lowest position. Clear the space under the desk first. Stop
+  aborts it (see [Motor recalibration](#motor-recalibration)).
 
 ## Credits and license
 

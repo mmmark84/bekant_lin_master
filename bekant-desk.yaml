@@ -73,8 +73,9 @@ number:
 
 button:
   - platform: bekant
-    recalibrate:
+    recalibrate:  # motor reset, drives the desk to the floor - see README "Motor recalibration"
       name: Recalibrate
+      disabled_by_default: true
   - platform: template
     name: Sit
     icon: mdi:chair-rolling

@@ -74,6 +74,11 @@ STOPPING1..3 [87] --> STOPPING4 [84] --(leg A idle)--> OFF
 STARTING_RECAL [C4] --> RECAL [BD, target 0] --(both legs status 1, enc <= 99)--> END_RECAL [BC, 99] --> OFF
 ```
 
+The original controller and Megadesk ignore all input during recalibration and have no way out of
+RECAL other than a power cycle. This component also drops from STARTING_RECAL/RECAL straight to OFF
+(idle commands, no BC) on stop, a button press or after 2 minutes. How the legs react to a
+recalibration cut short is not known.
+
 Up/down is requested while the target is more than 137 counts (hysteresis) away. A held button
 keeps the target 159 counts ahead of the current position.
 

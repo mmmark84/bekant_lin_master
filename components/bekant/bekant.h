@@ -66,6 +66,7 @@ class BekantDesk : public Component {
   void move_to_position(float position);
   void stop() { this->req_stop_.store(true); }
   /// Drives both legs slowly to the bottom end stop and re-zeroes them. Only accepted when idle.
+  /// Ignores all other input while it runs; stop, a button press or a timeout abort it.
   void recalibrate() { this->req_recalibrate_.store(true); }
   /// Mirrors the original rocker: +1 while "up" is held, -1 while "down" is held, 0 on release.
   /// A press while the desk drives to a target stops it instead, like the original controller.
@@ -104,6 +105,7 @@ class BekantDesk : public Component {
   bool init_recv_(TickType_t &wake);
   bool burst_();
   void plan_();
+  void supervise_recal_();
   void halt_(int32_t current);
   void reset_motion_();
   static void wait_(TickType_t &wake, uint32_t ms);
@@ -146,10 +148,16 @@ class BekantDesk : public Component {
   std::atomic<Motion> motion_{Motion::IDLE};
   std::atomic<Link> link_{Link::STARTING};
   std::atomic<bool> drift_fault_{false};
+  std::atomic<bool> recal_aborted_{false};  ///< until the legs move again or are re-initialised
   std::atomic<uint8_t> silent_leg_{0};  ///< LIN id of the leg that stopped answering
 
   // LIN task only
   State state_{State::OFF};
+  uint8_t status_a_{0};
+  uint8_t status_b_{0};
+  TickType_t recal_start_{0};
+  TickType_t recal_logged_{0};
+  uint16_t recal_logged_status_{0};
   Command user_cmd_{Command::NONE};
   bool last_move_up_{false};
   int32_t target_{0};

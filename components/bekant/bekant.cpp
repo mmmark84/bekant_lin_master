@@ -46,6 +46,8 @@ static constexpr uint8_t MAX_FAILED_BURSTS = 10;
 static constexpr int32_t HYSTERESIS = 137;   ///< ignore moves shorter than this (encoder counts)
 static constexpr int32_t MOVE_OFFSET = 159;  ///< look-ahead while a button is held
 static constexpr uint32_t PUBLISH_INTERVAL_MS = 500;
+static constexpr uint32_t RECAL_TIMEOUT_MS = 120000;  ///< give up if the legs never report the bottom
+static constexpr uint32_t RECAL_LOG_INTERVAL_MS = 1000;
 static constexpr uint32_t TASK_STACK = 4096;
 static constexpr UBaseType_t TASK_PRIORITY = 10;  // above the ESPHome loop task, below Wi-Fi/lwIP
 
@@ -201,6 +203,9 @@ void BekantDesk::publish_status_(Link link, Motion motion) {
         snprintf(status, sizeof(status), "moving down");
       } else if (motion == Motion::RECALIBRATING) {
         snprintf(status, sizeof(status), "recalibrating");
+      } else if (this->recal_aborted_.load()) {
+        snprintf(status, sizeof(status), "recalibration aborted");
+        fault = true;
       } else {
         snprintf(status, sizeof(status), "idle");
       }
@@ -269,6 +274,7 @@ void BekantDesk::reset_motion_() {
   this->target_ = this->enc_a_.load();
   this->motion_.store(Motion::IDLE);
   this->drift_fault_.store(false);
+  this->recal_aborted_.store(false);
   // Don't act on requests that piled up while the bus was down.
   this->req_target_.store(-1);
   this->req_stop_.store(false);
@@ -376,14 +382,18 @@ bool BekantDesk::burst_() {
   const uint16_t enc_max = std::max(enc_a, enc_b);
   this->enc_a_.store(enc_a);
   this->enc_b_.store(enc_b);
+  this->status_a_ = status_a;
+  this->status_b_ = status_b;
 
   // Moving up, both legs aim for the lower one (and vice versa) so they stay level.
   uint16_t target = enc_a;
   uint8_t command = CMD_IDLE;
   switch (this->state_) {
     case State::OFF:
-      if (this->user_cmd_ != Command::NONE && leg_idle(status_a) && leg_idle(status_b))
+      if (this->user_cmd_ != Command::NONE && leg_idle(status_a) && leg_idle(status_b)) {
         this->state_ = State::STARTING;
+        this->recal_aborted_.store(false);  // the legs take orders again
+      }
       break;
     case State::STARTING:
       command = CMD_PREMOVE;
@@ -483,8 +493,10 @@ void BekantDesk::halt_(int32_t current) {
 
 // Turns the requests from the main loop into the up/down command for the next burst.
 void BekantDesk::plan_() {
-  if (this->state_ >= State::STARTING_RECAL)
-    return;  // recalibration runs to completion on its own
+  if (this->state_ >= State::STARTING_RECAL) {
+    this->supervise_recal_();
+    return;
+  }
 
   if (this->req_recalibrate_.exchange(false)) {
     if (this->state_ == State::OFF) {
@@ -492,6 +504,9 @@ void BekantDesk::plan_() {
       this->state_ = State::STARTING_RECAL;
       this->user_cmd_ = Command::NONE;
       this->moving_to_target_ = false;
+      this->recal_start_ = xTaskGetTickCount();
+      this->recal_logged_status_ = UINT16_MAX;  // log the first cycle
+      this->recal_aborted_.store(false);
       return;
     }
     ESP_LOGW(TAG, "Recalibration ignored while the desk is moving");
@@ -552,6 +567,51 @@ void BekantDesk::plan_() {
     this->user_cmd_ = Command::NONE;
     this->moving_to_target_ = false;
   }
+}
+
+// Recalibration runs on its own and only ends once both legs report the bottom (status 1, encoder
+// <= 99). The original controller and Megadesk wait for that forever; here stop, a button press
+// or a timeout drop back to idle. What the legs make of a recalibration cut short is unknown.
+void BekantDesk::supervise_recal_() {
+  const TickType_t now = xTaskGetTickCount();
+  const uint16_t enc_a = this->enc_a_.load();
+  const uint16_t enc_b = this->enc_b_.load();
+  const uint16_t status = (this->status_a_ << 8) | this->status_b_;
+  if (status != this->recal_logged_status_ || now - this->recal_logged_ >= pdMS_TO_TICKS(RECAL_LOG_INTERVAL_MS)) {
+    ESP_LOGI(TAG, "Recalibrating: leg A %u (status %u), leg B %u (status %u)", enc_a, this->status_a_, enc_b,
+             this->status_b_);
+    this->recal_logged_status_ = status;
+    this->recal_logged_ = now;
+  }
+
+  // Requests made now are dropped, not carried out once recalibration is over.
+  this->req_target_.store(-1);
+  this->req_recalibrate_.store(false);
+
+  const int8_t button = this->button_.load();
+  const bool pressed = button != 0 && button != this->prev_button_;
+  this->prev_button_ = button;
+  if (button == 0)
+    this->button_suppressed_ = false;
+
+  const char *reason = nullptr;
+  if (this->req_stop_.exchange(false)) {
+    reason = "stop";
+  } else if (pressed) {
+    reason = "button";
+  } else if (now - this->recal_start_ >= pdMS_TO_TICKS(RECAL_TIMEOUT_MS)) {
+    reason = "timeout";
+  }
+  if (reason == nullptr)
+    return;
+
+  ESP_LOGW(TAG, "Recalibration aborted (%s) at leg A %u (status %u), leg B %u (status %u). "
+           "Power-cycle the desk if it doesn't respond.",
+           reason, enc_a, this->status_a_, enc_b, this->status_b_);
+  this->state_ = State::OFF;
+  this->target_ = enc_a;  // stay put
+  this->button_suppressed_ = pressed;  // this press only aborts; release before jogging
+  this->recal_aborted_.store(true);
 }
 
 }  // namespace esphome::bekant
