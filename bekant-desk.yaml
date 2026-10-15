@@ -41,7 +41,8 @@ bekant:
   rx_pin: GPIO18  # <- Click TX (MCP2003B RXD)
   # cs_pin: GPIO16  # only with the CS SEL jumper on "CS"
   # NodeMCU ESP32 (board: esp32dev): tx_pin GPIO17, rx_pin GPIO16
-  # Optional: keep the desk away from the end stops (raw encoder counts, 299 - 6640).
+  # Optional: keep the desk away from obstacles (raw encoder counts, 299 - 6640). Applies to
+  # presets, slider, cover and buttons alike.
   # min_height_raw: 299
   # max_height_raw: 6640
   # Stop when the desk makes no headway for this long while driving (obstacle, overloaded leg).

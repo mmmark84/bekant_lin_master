@@ -72,7 +72,9 @@ The legs report encoder counts. To get centimetres:
 2. Drive it high, measure and note again.
 3. Put both pairs in `calibration:` (`raw_low`/`cm_low`, `raw_high`/`cm_high`).
 
-`min_height_raw` / `max_height_raw` keep the desk away from obstacles (range 299-6640).
+`min_height_raw` / `max_height_raw` keep the desk away from obstacles (range 299-6640). They apply
+to every move: presets, slider, cover and held buttons. Only a recalibration goes below them; from
+there the desk can only move back up into the range.
 
 This is only arithmetic in the ESP32; the desk doesn't move for it.
 

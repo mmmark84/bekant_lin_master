@@ -606,6 +606,10 @@ void BekantDesk::plan_() {
 
   if (this->target_ < DANGER_MIN_RAW || this->target_ > DANGER_MAX_RAW)
     this->target_ = current;  // never aim at an end stop
+  // Nor past the height limits, also not with a held button or a stop (both aim ahead). Outside the
+  // limits, e.g. after a recalibration, the desk may only head back towards them.
+  this->target_ = std::clamp<int32_t>(this->target_, std::min<int32_t>(current, this->min_raw_),
+                                      std::max<int32_t>(current, this->max_raw_));
 
   if (this->target_ > current + HYSTERESIS && current < this->max_raw_) {
     this->user_cmd_ = Command::UP;
