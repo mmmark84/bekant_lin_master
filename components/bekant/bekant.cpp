@@ -48,6 +48,9 @@ static constexpr int32_t MOVE_OFFSET = 159;  ///< look-ahead while a button is h
 static constexpr uint32_t PUBLISH_INTERVAL_MS = 500;
 static constexpr uint32_t RECAL_TIMEOUT_MS = 120000;  ///< give up if the legs never report the bottom
 static constexpr uint32_t RECAL_LOG_INTERVAL_MS = 1000;
+static constexpr int32_t STALL_COUNTS = 50;          ///< headway the lagging leg makes per stall_timeout
+static constexpr uint32_t STOP_TIMEOUT_MS = 5000;    ///< leg A has this long to report idle after a stop
+static constexpr uint32_t LEGS_IDLE_TIMEOUT_MS = 3000;  ///< a move waits this long for both legs to be idle
 static constexpr uint32_t TASK_STACK = 4096;
 static constexpr UBaseType_t TASK_PRIORITY = 10;  // above the ESPHome loop task, below Wi-Fi/lwIP
 
@@ -85,8 +88,9 @@ void BekantDesk::dump_config() {
                 this->rx_pin_, this->cs_pin_);
   ESP_LOGCONFIG(TAG, "  Height limits: %u - %u raw (%.1f - %.1f cm)", this->min_raw_, this->max_raw_,
                 this->raw_to_cm(this->min_raw_), this->raw_to_cm(this->max_raw_));
-  ESP_LOGCONFIG(TAG, "  Cycle gap: %u ms, max leg drift: %u", static_cast<unsigned>(this->cycle_gap_ms_),
-                this->max_drift_);
+  ESP_LOGCONFIG(TAG, "  Cycle gap: %u ms, max leg drift: %u, stall timeout: %u ms",
+                static_cast<unsigned>(this->cycle_gap_ms_), this->max_drift_,
+                static_cast<unsigned>(this->stall_timeout_ms_));
   LOG_SENSOR("  ", "Height", this->height_sensor_);
   LOG_SENSOR("  ", "Raw height", this->raw_height_sensor_);
   LOG_SENSOR("  ", "Drift", this->drift_sensor_);
@@ -181,7 +185,7 @@ void BekantDesk::publish_status_(Link link, Motion motion) {
     return;
 
   char status[48];
-  bool fault = false;
+  bool warning = false;
   switch (link) {
     case Link::STARTING:
       snprintf(status, sizeof(status), "starting");
@@ -191,23 +195,36 @@ void BekantDesk::publish_status_(Link link, Motion motion) {
       break;
     case Link::OFFLINE:
       snprintf(status, sizeof(status), "leg 0x%02X not responding", this->silent_leg_.load());
-      fault = true;
+      warning = true;
       break;
     case Link::ONLINE:
       if (this->drift_fault_.load()) {
         snprintf(status, sizeof(status), "legs out of sync - recalibrate");
-        fault = true;
+        warning = true;
       } else if (motion == Motion::UP) {
         snprintf(status, sizeof(status), "moving up");
       } else if (motion == Motion::DOWN) {
         snprintf(status, sizeof(status), "moving down");
       } else if (motion == Motion::RECALIBRATING) {
         snprintf(status, sizeof(status), "recalibrating");
-      } else if (this->recal_aborted_.load()) {
-        snprintf(status, sizeof(status), "recalibration aborted");
-        fault = true;
       } else {
-        snprintf(status, sizeof(status), "idle");
+        const Fault fault = this->fault_.load();
+        const uint16_t legs = this->fault_status_.load();
+        switch (fault) {
+          case Fault::NONE:
+            snprintf(status, sizeof(status), "idle");
+            break;
+          case Fault::BLOCKED:
+            snprintf(status, sizeof(status), "blocked - check for obstacles");
+            break;
+          case Fault::LEGS_NOT_IDLE:
+            snprintf(status, sizeof(status), "legs not idle (status A %u, B %u)", legs >> 8, legs & 0xFF);
+            break;
+          case Fault::RECAL_ABORTED:
+            snprintf(status, sizeof(status), "recalibration aborted");
+            break;
+        }
+        warning = fault != Fault::NONE;
       }
       break;
   }
@@ -215,7 +232,7 @@ void BekantDesk::publish_status_(Link link, Motion motion) {
     return;
   this->published_status_ = status;
   this->status_text_sensor_->publish_state(status);
-  if (fault) {
+  if (warning) {
     this->status_set_warning();
   } else {
     this->status_clear_warning();
@@ -272,9 +289,11 @@ void BekantDesk::reset_motion_() {
   this->user_cmd_ = Command::NONE;
   this->moving_to_target_ = false;
   this->target_ = this->enc_a_.load();
+  this->waiting_for_legs_ = false;
+  this->progress_state_ = State::OFF;
   this->motion_.store(Motion::IDLE);
   this->drift_fault_.store(false);
-  this->recal_aborted_.store(false);
+  this->fault_.store(Fault::NONE);
   // Don't act on requests that piled up while the bus was down.
   this->req_target_.store(-1);
   this->req_stop_.store(false);
@@ -380,6 +399,10 @@ bool BekantDesk::burst_() {
   const uint8_t status_b = leg_b[2];
   const uint16_t enc_min = std::min(enc_a, enc_b);
   const uint16_t enc_max = std::max(enc_a, enc_b);
+  const TickType_t now = xTaskGetTickCount();
+  // Only partly known what the status values mean (docs/protocol.md), so keep a trail of them.
+  if ((status_a != this->status_a_ || status_b != this->status_b_) && this->state_ < State::STARTING_RECAL)
+    ESP_LOGD(TAG, "Leg status A %u, B %u (leg A %u, leg B %u)", status_a, status_b, enc_a, enc_b);
   this->enc_a_.store(enc_a);
   this->enc_b_.store(enc_b);
   this->status_a_ = status_a;
@@ -390,9 +413,20 @@ bool BekantDesk::burst_() {
   uint8_t command = CMD_IDLE;
   switch (this->state_) {
     case State::OFF:
-      if (this->user_cmd_ != Command::NONE && leg_idle(status_a) && leg_idle(status_b)) {
+      if (this->user_cmd_ == Command::NONE) {
+        this->waiting_for_legs_ = false;
+      } else if (leg_idle(status_a) && leg_idle(status_b)) {
         this->state_ = State::STARTING;
-        this->recal_aborted_.store(false);  // the legs take orders again
+        this->waiting_for_legs_ = false;
+        this->fault_.store(Fault::NONE);  // the legs take orders again
+      } else if (!this->waiting_for_legs_) {
+        this->waiting_for_legs_ = true;
+        this->wait_start_ = now;
+      } else if (now - this->wait_start_ >= pdMS_TO_TICKS(LEGS_IDLE_TIMEOUT_MS)) {
+        // Don't keep the request around: the desk would start by itself once the legs come back.
+        ESP_LOGW(TAG, "Move cancelled, legs not idle (leg A status %u, leg B status %u)", status_a, status_b);
+        this->waiting_for_legs_ = false;
+        this->abort_move_(Fault::LEGS_NOT_IDLE);
       }
       break;
     case State::STARTING:
@@ -425,12 +459,20 @@ bool BekantDesk::burst_() {
       target = static_cast<uint16_t>(std::clamp<int32_t>(this->target_, 0, UINT16_MAX));
       command = CMD_FINE;
       this->state_ = static_cast<State>(static_cast<uint8_t>(this->state_) + 1);
+      this->stop_start_ = now;  // STOPPING4's timeout counts from here
       break;
     case State::STOPPING4:
       target = this->last_move_up_ ? enc_min : enc_max;
       command = CMD_FINISH;
-      if (leg_idle(status_a))
+      if (leg_idle(status_a)) {
         this->state_ = State::OFF;
+      } else if (now - this->stop_start_ >= pdMS_TO_TICKS(STOP_TIMEOUT_MS)) {
+        // The original controller and Megadesk wait here forever, reporting "moving" all along.
+        ESP_LOGW(TAG, "Leg A did not report idle after stopping (leg A status %u, leg B status %u)", status_a,
+                 status_b);
+        this->state_ = State::OFF;
+        this->abort_move_(Fault::LEGS_NOT_IDLE);
+      }
       break;
     case State::STARTING_RECAL:
       command = CMD_PREMOVE;
@@ -506,7 +548,7 @@ void BekantDesk::plan_() {
       this->moving_to_target_ = false;
       this->recal_start_ = xTaskGetTickCount();
       this->recal_logged_status_ = UINT16_MAX;  // log the first cycle
-      this->recal_aborted_.store(false);
+      this->fault_.store(Fault::NONE);
       return;
     }
     ESP_LOGW(TAG, "Recalibration ignored while the desk is moving");
@@ -556,6 +598,12 @@ void BekantDesk::plan_() {
     this->moving_to_target_ = false;
   }
 
+  if (this->stalled_()) {
+    ESP_LOGW(TAG, "Desk not moving, stopped (leg A %u status %u, leg B %u status %u)", this->enc_a_.load(),
+             this->status_a_, this->enc_b_.load(), this->status_b_);
+    this->abort_move_(Fault::BLOCKED);
+  }
+
   if (this->target_ < DANGER_MIN_RAW || this->target_ > DANGER_MAX_RAW)
     this->target_ = current;  // never aim at an end stop
 
@@ -567,6 +615,40 @@ void BekantDesk::plan_() {
     this->user_cmd_ = Command::NONE;
     this->moving_to_target_ = false;
   }
+}
+
+// While driving, the lagging leg has to make headway. If it doesn't, a leg is blocked or has stopped
+// on its own (overload): the other leg then waits for it, and the original state machine would keep
+// sending raise/lower - and report "moving" - forever. Stop would not help either, as going up it
+// aims a little further (see halt_()).
+bool BekantDesk::stalled_() {
+  const bool up = this->state_ == State::UP;
+  if (!up && this->state_ != State::DOWN) {
+    this->progress_state_ = State::OFF;
+    return false;
+  }
+  const int32_t enc_a = this->enc_a_.load();
+  const int32_t enc_b = this->enc_b_.load();
+  const int32_t lagging = up ? std::min(enc_a, enc_b) : std::max(enc_a, enc_b);
+  const int32_t headway = up ? lagging - this->progress_raw_ : this->progress_raw_ - lagging;
+  const TickType_t now = xTaskGetTickCount();
+  if (this->progress_state_ != this->state_ || headway >= STALL_COUNTS) {
+    this->progress_state_ = this->state_;
+    this->progress_raw_ = lagging;
+    this->progress_tick_ = now;
+    return false;
+  }
+  return now - this->progress_tick_ >= pdMS_TO_TICKS(this->stall_timeout_ms_);
+}
+
+// Drops the move in progress (or waiting to start): aim at where the desk is, and a held button has to
+// be released before it moves the desk again. The status shows why until the legs move again.
+void BekantDesk::abort_move_(Fault fault) {
+  this->target_ = this->enc_a_.load();
+  this->moving_to_target_ = false;
+  this->button_suppressed_ = this->button_.load() != 0;
+  this->fault_status_.store((this->status_a_ << 8) | this->status_b_);
+  this->fault_.store(fault);
 }
 
 // Recalibration runs on its own and only ends once both legs report the bottom (status 1, encoder
@@ -609,9 +691,7 @@ void BekantDesk::supervise_recal_() {
            "Power-cycle the desk if it doesn't respond.",
            reason, enc_a, this->status_a_, enc_b, this->status_b_);
   this->state_ = State::OFF;
-  this->target_ = enc_a;  // stay put
-  this->button_suppressed_ = pressed;  // this press only aborts; release before jogging
-  this->recal_aborted_.store(true);
+  this->abort_move_(Fault::RECAL_ABORTED);  // stay put; a press only aborts, release before jogging
 }
 
 }  // namespace esphome::bekant

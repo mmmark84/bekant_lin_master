@@ -27,6 +27,8 @@ static constexpr uint16_t DANGER_MAX_RAW = 6640;
 enum class Motion : uint8_t { IDLE, UP, DOWN, RECALIBRATING };
 /// State of the LIN link with the legs.
 enum class Link : uint8_t { STARTING, INITIALISING, ONLINE, OFFLINE };
+/// Why the last move or request was dropped; shown until the legs move again.
+enum class Fault : uint8_t { NONE, BLOCKED, LEGS_NOT_IDLE, RECAL_ABORTED };
 
 /// LIN master replacing the IKEA Bekant up/down controller.
 ///
@@ -46,6 +48,7 @@ class BekantDesk : public Component {
   void set_calibration(uint16_t raw_low, float cm_low, uint16_t raw_high, float cm_high);
   void set_cycle_gap_ms(uint32_t ms) { this->cycle_gap_ms_ = ms; }
   void set_max_drift(uint16_t max_drift) { this->max_drift_ = max_drift; }
+  void set_stall_timeout_ms(uint32_t ms) { this->stall_timeout_ms_ = ms; }
 
   void set_cover(BekantCover *cover) { this->cover_ = cover; }
   void set_height_sensor(sensor::Sensor *sensor) { this->height_sensor_ = sensor; }
@@ -105,8 +108,10 @@ class BekantDesk : public Component {
   bool init_recv_(TickType_t &wake);
   bool burst_();
   void plan_();
+  bool stalled_();
   void supervise_recal_();
   void halt_(int32_t current);
+  void abort_move_(Fault fault);
   void reset_motion_();
   static void wait_(TickType_t &wake, uint32_t ms);
 
@@ -128,6 +133,7 @@ class BekantDesk : public Component {
   float cm_per_raw_{(119.38f - 58.42f) / (6640 - 299)};
   uint32_t cycle_gap_ms_{50};
   uint16_t max_drift_{200};
+  uint32_t stall_timeout_ms_{1500};
 
   BekantCover *cover_{nullptr};
   sensor::Sensor *height_sensor_{nullptr};
@@ -148,13 +154,20 @@ class BekantDesk : public Component {
   std::atomic<Motion> motion_{Motion::IDLE};
   std::atomic<Link> link_{Link::STARTING};
   std::atomic<bool> drift_fault_{false};
-  std::atomic<bool> recal_aborted_{false};  ///< until the legs move again or are re-initialised
+  std::atomic<Fault> fault_{Fault::NONE};  ///< until the legs move again or are re-initialised
+  std::atomic<uint16_t> fault_status_{0};  ///< leg statuses when fault_ was set (A << 8 | B)
   std::atomic<uint8_t> silent_leg_{0};  ///< LIN id of the leg that stopped answering
 
   // LIN task only
   State state_{State::OFF};
   uint8_t status_a_{0};
   uint8_t status_b_{0};
+  TickType_t stop_start_{0};
+  bool waiting_for_legs_{false};  ///< a move is requested, the legs aren't idle yet
+  TickType_t wait_start_{0};
+  State progress_state_{State::OFF};  ///< UP/DOWN while the lagging leg is watched
+  int32_t progress_raw_{0};
+  TickType_t progress_tick_{0};
   TickType_t recal_start_{0};
   TickType_t recal_logged_{0};
   uint16_t recal_logged_status_{0};

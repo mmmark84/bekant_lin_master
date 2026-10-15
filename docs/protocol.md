@@ -45,6 +45,8 @@ The original controller pauses ~150 ms between bursts, Megadesk 50 ms (`cycle_ga
 | 1 | at the bottom during recalibration |
 | 224 | first position report after power-up |
 
+Other values are unknown. The component logs every status change at debug level.
+
 Higher encoder value = higher desk. Usable range 299-6640 (end stops at ~162 / ~6777).
 
 ## Commands (byte 3 of 0x12)
@@ -73,6 +75,12 @@ DOWN --(no longer requested, or min reached)--> STOPPING1
 STOPPING1..3 [87] --> STOPPING4 [84] --(leg A idle)--> OFF
 STARTING_RECAL [C4] --> RECAL [BD, target 0] --(both legs status 1, enc <= 99)--> END_RECAL [BC, 99] --> OFF
 ```
+
+The original controller and Megadesk never leave UP/DOWN while the target is out of reach, nor
+STOPPING4 while leg A isn't idle. A leg that is blocked or overloaded stops on its own, the other
+leg waits for it, and the controller keeps sending raise/lower. This component stops when the
+lagging leg makes less than 50 counts of headway in `stall_timeout` (default 1.5 s), and leaves
+STOPPING4 after 5 s. A move request waits at most 3 s for both legs to be idle.
 
 The original controller and Megadesk ignore all input during recalibration and have no way out of
 RECAL other than a power cycle. This component also drops from STARTING_RECAL/RECAL straight to OFF

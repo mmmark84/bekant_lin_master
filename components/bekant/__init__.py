@@ -21,6 +21,7 @@ CONF_RAW_HIGH = "raw_high"
 CONF_CM_HIGH = "cm_high"
 CONF_CYCLE_GAP = "cycle_gap"
 CONF_MAX_DRIFT = "max_drift"
+CONF_STALL_TIMEOUT = "stall_timeout"
 
 # Encoder range the original controller stays within (see bekant.h).
 DANGER_MIN_RAW = 299
@@ -72,6 +73,13 @@ CONFIG_SCHEMA = cv.All(
                 ),
             ),
             cv.Optional(CONF_MAX_DRIFT, default=200): cv.int_range(min=0, max=2000),
+            cv.Optional(CONF_STALL_TIMEOUT, default="1500ms"): cv.All(
+                cv.positive_time_period_milliseconds,
+                cv.Range(
+                    min=cv.TimePeriod(milliseconds=500),
+                    max=cv.TimePeriod(seconds=10),
+                ),
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
@@ -104,3 +112,6 @@ async def to_code(config):
     )
     cg.add(var.set_cycle_gap_ms(int(config[CONF_CYCLE_GAP].total_milliseconds)))
     cg.add(var.set_max_drift(config[CONF_MAX_DRIFT]))
+    cg.add(
+        var.set_stall_timeout_ms(int(config[CONF_STALL_TIMEOUT].total_milliseconds))
+    )

@@ -44,6 +44,8 @@ bekant:
   # Optional: keep the desk away from the end stops (raw encoder counts, 299 - 6640).
   # min_height_raw: 299
   # max_height_raw: 6640
+  # Stop when the desk makes no headway for this long while driving (obstacle, overloaded leg).
+  # stall_timeout: 1500ms
   # Measure two heights with a tape and note the "Height (raw)" value for each.
   calibration:
     raw_low: 299

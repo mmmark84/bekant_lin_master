@@ -50,7 +50,7 @@ esphome run bekant-desk.yaml
 | sensor | `drift` | Encoder difference between the legs (diagnostic) |
 | number | `target_height` | Height slider in cm; follows the desk when it stops |
 | button | `recalibrate` | Motor recalibration: drives slowly to the bottom end stop and re-zeroes the legs (see below) |
-| text_sensor | `status` | starting / initialising legs / idle / moving up / moving down / recalibrating / faults (incl. "recalibration aborted") |
+| text_sensor | `status` | starting / initialising legs / idle / moving up / moving down / recalibrating / faults ("blocked - check for obstacles", "legs not idle", "recalibration aborted", ...) |
 
 From lambdas (`id(desk)`):
 
@@ -105,6 +105,13 @@ or leave it out of the YAML.
   drops to idle and re-runs the start-up handshake.
 - When the legs drift more than `max_drift` counts apart (default 200) the desk refuses to move
   until it has been recalibrated.
+- When the desk makes no headway for `stall_timeout` (default 1.5 s) while driving, it stops and the
+  status reads "blocked - check for obstacles". A leg that hits an obstacle or is overloaded stops on
+  its own and the other leg waits for it; without this check the desk would report "moving" until
+  a power cycle. The next move clears the status.
+- When leg A doesn't report idle within 5 s of a stop, or the legs aren't idle within 3 s of a move
+  request, the move is dropped and the status shows the legs' status bytes ("legs not idle").
+  Leg status changes are logged at debug level.
 - Recalibration drives the desk to its lowest position. Clear the space under the desk first. Stop
   aborts it (see [Motor recalibration](#motor-recalibration)).
 
